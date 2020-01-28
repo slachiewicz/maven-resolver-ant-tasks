@@ -61,10 +61,10 @@
   </distributionManagement>
 
   <properties>
-    <mavenVersion>3.5.0</mavenVersion>
-    <resolverVersion>1.3.3</resolverVersion>
+    <mavenVersion>3.7.0-SNAPSHOT</mavenVersion>
+    <resolverVersion>1.4.2-SNAPSHOT</resolverVersion>
     <antVersion>1.8.4</antVersion>
-    <javaVersion>7</javaVersion>
+    <javaVersion>8</javaVersion>
     <maven.site.path>resolver-archives/resolver-ant-tasks-LATEST</maven.site.path>
     <checkstyle.violation.ignore>LineLength,MagicNumber</checkstyle.violation.ignore>
   </properties>
