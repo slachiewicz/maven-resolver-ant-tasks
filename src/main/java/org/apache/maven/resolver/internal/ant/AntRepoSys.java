@@ -39,12 +39,21 @@ import java.util.Properties;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.maven.model.Model;
-import org.apache.maven.model.building.DefaultModelBuildingRequest;
-import org.apache.maven.model.building.FileModelSource;
-import org.apache.maven.model.building.ModelBuildingException;
-import org.apache.maven.model.building.ModelBuildingRequest;
-import org.apache.maven.model.resolution.ModelResolver;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.services.ModelBuilder;
+import org.apache.maven.api.services.ModelBuilderException;
+import org.apache.maven.api.services.ModelBuilderRequest;
+import org.apache.maven.api.services.SettingsBuilder;
+import org.apache.maven.api.services.SettingsBuilderException;
+import org.apache.maven.api.services.SettingsBuilderRequest;
+import org.apache.maven.api.services.Sources;
+import org.apache.maven.api.settings.Profile;
+import org.apache.maven.api.settings.Repository;
+import org.apache.maven.api.settings.RepositoryPolicy;
+import org.apache.maven.api.settings.Server;
+import org.apache.maven.api.settings.Settings;
+import org.apache.maven.api.xml.XmlNode;
 import org.apache.maven.resolver.internal.ant.types.Artifact;
 import org.apache.maven.resolver.internal.ant.types.Artifacts;
 import org.apache.maven.resolver.internal.ant.types.Authentication;
@@ -59,18 +68,6 @@ import org.apache.maven.resolver.internal.ant.types.Proxy;
 import org.apache.maven.resolver.internal.ant.types.RemoteRepositories;
 import org.apache.maven.resolver.internal.ant.types.RemoteRepository;
 import org.apache.maven.resolver.internal.ant.types.RemoteRepository.Policy;
-import org.apache.maven.settings.Profile;
-import org.apache.maven.settings.Repository;
-import org.apache.maven.settings.RepositoryPolicy;
-import org.apache.maven.settings.Server;
-import org.apache.maven.settings.Settings;
-import org.apache.maven.settings.building.DefaultSettingsBuilderFactory;
-import org.apache.maven.settings.building.DefaultSettingsBuildingRequest;
-import org.apache.maven.settings.building.SettingsBuilder;
-import org.apache.maven.settings.building.SettingsBuildingException;
-import org.apache.maven.settings.crypto.DefaultSettingsDecryptionRequest;
-import org.apache.maven.settings.crypto.SettingsDecrypter;
-import org.apache.maven.settings.crypto.SettingsDecryptionResult;
 import org.apache.tools.ant.BuildEvent;
 import org.apache.tools.ant.BuildException;
 import org.apache.tools.ant.BuildListener;
@@ -78,7 +75,6 @@ import org.apache.tools.ant.Project;
 import org.apache.tools.ant.Task;
 import org.apache.tools.ant.taskdefs.condition.Os;
 import org.apache.tools.ant.types.Reference;
-import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.eclipse.aether.ConfigurationProperties;
 import org.eclipse.aether.DefaultRepositoryCache;
 import org.eclipse.aether.RepositorySystem;
@@ -126,10 +122,6 @@ public class AntRepoSys {
     private static final Date STARTED = new Date();
 
     private static final boolean OS_WINDOWS = Os.isFamily("windows");
-
-    private static final SettingsBuilder SETTINGS_BUILDER = new DefaultSettingsBuilderFactory().newInstance();
-
-    private static final SettingsDecrypter SETTINGS_DECRYPTER = new AntSettingsDecryptorFactory().newInstance();
 
     private final Project project;
 
@@ -268,10 +260,9 @@ public class AntRepoSys {
         SessionBuilderSupplier sessionBuilderSupplier = new SessionBuilderSupplier(getSystem());
         RepositorySystemSession.SessionBuilder session = sessionBuilderSupplier.get();
 
-        // The supplier defaults to the classic, non-transitive dependency manager, as Maven 3 does.
-        if (isDependencyManagerTransitivity()) {
-            session.setDependencyManager(sessionBuilderSupplier.getDependencyManager(true));
-        }
+        // The mvn4 supplier defaults to the transitive dependency manager; the tasks keep the classic one, as Maven 3
+        // does, unless asked otherwise.
+        session.setDependencyManager(sessionBuilderSupplier.getDependencyManager(isDependencyManagerTransitivity()));
 
         final Map<Object, Object> configProps = new LinkedHashMap<>();
         configProps.put(ConfigurationProperties.USER_AGENT, getUserAgent());
@@ -327,16 +318,19 @@ public class AntRepoSys {
         Settings settings = getSettings();
         for (Server server : settings.getServers()) {
             if (server.getConfiguration() != null) {
-                Xpp3Dom dom = (Xpp3Dom) server.getConfiguration();
-                for (int i = dom.getChildCount() - 1; i >= 0; i--) {
-                    Xpp3Dom child = dom.getChild(i);
-                    if ("wagonProvider".equals(child.getName())) {
-                        dom.removeChild(i);
-                    } else if ("httpHeaders".equals(child.getName())) {
+                XmlNode dom = server.getConfiguration();
+                List<XmlNode> children = new ArrayList<>();
+                for (XmlNode child : dom.children()) {
+                    if ("wagonProvider".equals(child.name())) {
+                        continue;
+                    }
+                    if ("httpHeaders".equals(child.name())) {
                         configProps.put(
                                 ConfigurationProperties.HTTP_HEADERS + "." + server.getId(), getHttpHeaders(child));
                     }
+                    children.add(child);
                 }
+                dom = XmlNode.newInstance(dom.name(), dom.value(), dom.attributes(), children, dom.inputLocation());
 
                 configProps.put("aether.connector.wagon.config." + server.getId(), dom);
             }
@@ -346,14 +340,13 @@ public class AntRepoSys {
         }
     }
 
-    private Map<String, String> getHttpHeaders(Xpp3Dom dom) {
+    private Map<String, String> getHttpHeaders(XmlNode dom) {
         final Map<String, String> headers = new HashMap<>();
-        for (int i = 0; i < dom.getChildCount(); i++) {
-            Xpp3Dom child = dom.getChild(i);
-            Xpp3Dom name = child.getChild("name");
-            Xpp3Dom value = child.getChild("value");
-            if (name != null && name.getValue() != null) {
-                headers.put(name.getValue(), (value != null) ? value.getValue() : null);
+        for (XmlNode child : dom.children()) {
+            XmlNode name = child.child("name");
+            XmlNode value = child.child("value");
+            if (name != null && name.value() != null) {
+                headers.put(name.value(), (value != null) ? value.value() : null);
             }
         }
         return Collections.unmodifiableMap(headers);
@@ -390,23 +383,34 @@ public class AntRepoSys {
 
     private synchronized Settings getSettings() {
         if (settings == null) {
-            DefaultSettingsBuildingRequest request = new DefaultSettingsBuildingRequest();
-            request.setUserSettingsFile(getUserSettings());
-            request.setGlobalSettingsFile(getGlobalSettings());
-            request.setSystemProperties(getSystemProperties());
-            request.setUserProperties(getUserProperties());
+            Properties systemProperties = getSystemProperties();
+            Properties userProperties = getUserProperties();
 
-            try {
-                settings = SETTINGS_BUILDER.build(request).getEffectiveSettings();
-            } catch (SettingsBuildingException e) {
-                project.log("Could not process settings.xml: " + e.getMessage(), e, Project.MSG_WARN);
-                settings = new Settings();
+            SettingsBuilderRequest.SettingsBuilderRequestBuilder request = SettingsBuilderRequest.builder()
+                    .session(MavenApi.shared())
+                    .interpolationSource(key -> {
+                        String value = userProperties.getProperty(key);
+                        return value != null ? value : systemProperties.getProperty(key);
+                    });
+            File user = getUserSettings();
+            if (user != null) {
+                request.userSettingsSource(Sources.fromPath(user.toPath()));
+            }
+            File global = getGlobalSettings();
+            if (global != null) {
+                request.installationSettingsSource(Sources.fromPath(global.toPath()));
             }
 
-            SettingsDecryptionResult result =
-                    SETTINGS_DECRYPTER.decrypt(new DefaultSettingsDecryptionRequest(settings));
-            settings.setServers(result.getServers());
-            settings.setProxies(result.getProxies());
+            try {
+                // the v4 settings builder also decrypts the server and proxy passwords
+                settings = MavenApi.shared()
+                        .getService(SettingsBuilder.class)
+                        .build(request.build())
+                        .getEffectiveSettings();
+            } catch (SettingsBuilderException e) {
+                project.log("Could not process settings.xml: " + e.getMessage(), e, Project.MSG_WARN);
+                settings = Settings.newInstance();
+            }
         }
         return settings;
     }
@@ -419,7 +423,10 @@ public class AntRepoSys {
         }
 
         Settings settings = getSettings();
-        org.apache.maven.settings.Proxy activeProxy = settings.getActiveProxy();
+        org.apache.maven.api.settings.Proxy activeProxy = settings.getProxies().stream()
+                .filter(org.apache.maven.api.settings.Proxy::isActive)
+                .findFirst()
+                .orElse(null);
         if (activeProxy != null) {
             AuthenticationBuilder auth = new AuthenticationBuilder();
             auth.addUsername(activeProxy.getUsername()).addPassword(activeProxy.getPassword());
@@ -441,7 +448,7 @@ public class AntRepoSys {
         }
 
         Settings settings = getSettings();
-        for (org.apache.maven.settings.Mirror mirror : settings.getMirrors()) {
+        for (org.apache.maven.api.settings.Mirror mirror : settings.getMirrors()) {
             selector.add(
                     String.valueOf(mirror.getId()),
                     mirror.getUrl(),
@@ -488,8 +495,12 @@ public class AntRepoSys {
 
         Settings settings = getSettings();
         List<String> activeProfiles = settings.getActiveProfiles();
+        Map<String, Profile> profilesById = new HashMap<>();
+        for (Profile profile : settings.getProfiles()) {
+            profilesById.put(profile.getId(), profile);
+        }
         for (String profileId : activeProfiles) {
-            Profile profile = settings.getProfilesAsMap().get(profileId);
+            Profile profile = profilesById.get(profileId);
             if (profile == null) {
                 project.log("Profile '" + profileId + "' is not defined in settings.xml, skipping", Project.MSG_WARN);
                 continue;
@@ -652,30 +663,43 @@ public class AntRepoSys {
             List<org.eclipse.aether.repository.RemoteRepository> repositories =
                     ConverterUtils.toRepositories(task.getProject(), getSystem(), session, effectiveRepositories);
 
-            ModelResolver modelResolver =
-                    new AntModelResolver(session, "project", getSystem(), getRemoteRepoMan(), repositories);
+            Session apiSession = MavenApi.newModelSession(
+                    new AntModelResolver.Context(session, "project", getSystem(), getRemoteRepoMan(), repositories));
 
             Settings settings = getSettings();
+            SettingsBuilder settingsBuilder = MavenApi.shared().getService(SettingsBuilder.class);
 
-            DefaultModelBuildingRequest request = new DefaultModelBuildingRequest();
-            request.setLocationTracking(true);
-            request.setProcessPlugins(false);
-            if (local) {
-                request.setPomFile(pomFile);
-                request.setValidationLevel(ModelBuildingRequest.VALIDATION_LEVEL_STRICT);
-            } else {
-                request.setModelSource(new FileModelSource(pomFile));
-                request.setValidationLevel(ModelBuildingRequest.VALIDATION_LEVEL_MINIMAL);
-            }
-            request.setSystemProperties(getSystemProperties());
-            request.setUserProperties(getUserProperties());
-            request.setProfiles(SettingsUtils.convert(settings.getProfiles()));
-            request.setActiveProfileIds(settings.getActiveProfiles());
-            request.setModelResolver(modelResolver);
-            return repositorySystemSupplier.getModelBuilder().build(request).getEffectiveModel();
-        } catch (ModelBuildingException e) {
+            ModelBuilderRequest request = ModelBuilderRequest.builder()
+                    .session(apiSession)
+                    .requestType(
+                            local
+                                    ? ModelBuilderRequest.RequestType.BUILD_EFFECTIVE
+                                    : ModelBuilderRequest.RequestType.CONSUMER_DEPENDENCY)
+                    .locationTracking(true)
+                    .source(Sources.buildSource(pomFile.toPath()))
+                    .systemProperties(toMap(getSystemProperties()))
+                    .userProperties(toMap(getUserProperties()))
+                    .profiles(settings.getProfiles().stream()
+                            .map(settingsBuilder::convert)
+                            .collect(java.util.stream.Collectors.toList()))
+                    .activeProfileIds(settings.getActiveProfiles())
+                    .build();
+            return apiSession
+                    .getService(ModelBuilder.class)
+                    .newSession()
+                    .build(request)
+                    .getEffectiveModel();
+        } catch (ModelBuilderException e) {
             throw new BuildException("Could not load POM " + pomFile + ": " + e.getMessage(), e);
         }
+    }
+
+    private static Map<String, String> toMap(Properties properties) {
+        Map<String, String> map = new HashMap<>();
+        for (String key : properties.stringPropertyNames()) {
+            map.put(key, properties.getProperty(key));
+        }
+        return map;
     }
 
     private Properties getSystemProperties() {
@@ -793,7 +817,7 @@ public class AntRepoSys {
         if (dependencies.getPom() != null) {
             Model model = dependencies.getPom().getModel(task);
             if (model.getDependencyManagement() != null) {
-                for (org.apache.maven.model.Dependency manDep :
+                for (org.apache.maven.api.model.Dependency manDep :
                         model.getDependencyManagement().getDependencies()) {
                     Dependency dependency = new Dependency();
                     dependency.setArtifactId(manDep.getArtifactId());
@@ -806,7 +830,7 @@ public class AntRepoSys {
                             && !manDep.getSystemPath().isEmpty()) {
                         dependency.setSystemPath(task.getProject().resolveFile(manDep.getSystemPath()));
                     }
-                    for (org.apache.maven.model.Exclusion exc : manDep.getExclusions()) {
+                    for (org.apache.maven.api.model.Exclusion exc : manDep.getExclusions()) {
                         Exclusion exclusion = new Exclusion();
                         exclusion.setGroupId(exc.getGroupId());
                         exclusion.setArtifactId(exc.getArtifactId());
@@ -819,7 +843,7 @@ public class AntRepoSys {
                 }
             }
 
-            for (org.apache.maven.model.Dependency dep : model.getDependencies()) {
+            for (org.apache.maven.api.model.Dependency dep : model.getDependencies()) {
                 Dependency dependency = new Dependency();
                 dependency.setArtifactId(dep.getArtifactId());
                 dependency.setClassifier(dep.getClassifier());
@@ -837,7 +861,7 @@ public class AntRepoSys {
                 if (dep.getSystemPath() != null && !dep.getSystemPath().isEmpty()) {
                     dependency.setSystemPath(task.getProject().resolveFile(dep.getSystemPath()));
                 }
-                for (org.apache.maven.model.Exclusion exc : dep.getExclusions()) {
+                for (org.apache.maven.api.model.Exclusion exc : dep.getExclusions()) {
                     Exclusion exclusion = new Exclusion();
                     exclusion.setGroupId(exc.getGroupId());
                     exclusion.setArtifactId(exc.getArtifactId());

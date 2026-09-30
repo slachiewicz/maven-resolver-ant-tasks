@@ -18,7 +18,7 @@
  */
 package org.apache.maven.resolver.internal.ant.types;
 
-import org.apache.maven.model.Model;
+import org.apache.maven.api.model.Model;
 import org.apache.tools.ant.Project;
 import org.codehaus.plexus.interpolation.reflection.ReflectionValueExtractor;
 
@@ -65,7 +65,7 @@ class ModelValueExtractor {
             try {
                 if (expr.startsWith(PREFIX_PROPERTIES)) {
                     String key = expr.substring(PREFIX_PROPERTIES.length());
-                    return model.getProperties().getProperty(key);
+                    return model.getProperties().get(key);
                 }
 
                 return ReflectionValueExtractor.evaluate(expr, model, false);

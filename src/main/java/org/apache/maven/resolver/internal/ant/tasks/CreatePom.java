@@ -23,9 +23,10 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
-import org.apache.maven.model.RepositoryPolicy;
+import org.apache.maven.api.model.RepositoryPolicy;
 import org.apache.maven.resolver.internal.ant.types.Dependencies;
 import org.apache.maven.resolver.internal.ant.types.Dependency;
 import org.apache.maven.resolver.internal.ant.types.DependencyManagement;
@@ -366,51 +367,50 @@ public class CreatePom extends Task {
 
         if (repositories != null) {
             repositories.getRepositories().forEach(repository -> {
-                org.apache.maven.model.Repository repo = new org.apache.maven.model.Repository();
-                repo.setId(repository.getId());
-                repo.setName(repository.getName());
-                repo.setUrl(repository.getUrl());
-                repo.setLayout(repository.getLayout());
+                org.apache.maven.api.model.Repository.Builder repo = org.apache.maven.api.model.Repository.newBuilder()
+                        .id(repository.getId())
+                        .name(repository.getName())
+                        .url(repository.getUrl())
+                        .layout(repository.getLayout());
                 if (repository.getReleases() != null) {
-                    RepositoryPolicy policy = new RepositoryPolicy();
-                    policy.setEnabled(repository.getReleases().isEnabled());
-                    repo.setReleases(policy);
+                    repo.releases(RepositoryPolicy.newBuilder()
+                            .enabled(String.valueOf(repository.getReleases().isEnabled()))
+                            .build());
                 }
                 if (repository.getSnapshots() != null) {
-                    RepositoryPolicy policy = new RepositoryPolicy();
-                    policy.setEnabled(repository.getSnapshots().isEnabled());
-                    repo.setSnapshots(policy);
+                    repo.snapshots(RepositoryPolicy.newBuilder()
+                            .enabled(String.valueOf(repository.getSnapshots().isEnabled()))
+                            .build());
                 }
-                pom.getModel().getRepositories().add(repo);
+                pom.addRepository(repo.build());
             });
         }
 
         if (developers != null) {
             developers.getDevelopers().forEach(developer -> {
-                org.apache.maven.model.Developer dev = new org.apache.maven.model.Developer();
-                dev.setId(developer.getIdText());
-                dev.setName(developer.getNameText());
-                dev.setEmail(developer.getEmailText());
-                dev.setUrl(developer.getUrlText());
-                dev.setOrganization(developer.getOrganizationText());
-                dev.setOrganizationUrl(developer.getOrganizationUrlText());
+                org.apache.maven.api.model.Developer.Builder dev = org.apache.maven.api.model.Developer.newBuilder()
+                        .id(developer.getIdText())
+                        .name(developer.getNameText())
+                        .email(developer.getEmailText())
+                        .url(developer.getUrlText())
+                        .organization(developer.getOrganizationText())
+                        .organizationUrl(developer.getOrganizationUrlText());
                 if (!developer.getRoles().isEmpty()) {
-                    dev.setRoles(new ArrayList<>());
-                    developer.getRoles().forEach(role -> {
-                        dev.getRoles().add(role.getText());
-                    });
+                    List<String> roles = new ArrayList<>();
+                    developer.getRoles().forEach(role -> roles.add(role.getText()));
+                    dev.roles(roles);
                 }
-                dev.setTimezone(developer.getTimezoneText());
-                pom.getModel().getDevelopers().add(dev);
+                dev.timezone(developer.getTimezoneText());
+                pom.addDeveloper(dev.build());
             });
         }
 
         if (scm != null) {
-            org.apache.maven.model.Scm mavenScm = new org.apache.maven.model.Scm();
-            mavenScm.setConnection(scm.getConnectionText());
-            mavenScm.setDeveloperConnection(scm.getDeveloperConnectionText());
-            mavenScm.setUrl(scm.getUrlText());
-            pom.getModel().setScm(mavenScm);
+            pom.setScm(org.apache.maven.api.model.Scm.newBuilder()
+                    .connection(scm.getConnectionText())
+                    .developerConnection(scm.getDeveloperConnectionText())
+                    .url(scm.getUrlText())
+                    .build());
         }
 
         try (OutputStream pomOutputStream = Files.newOutputStream(pomFile.toPath())) {

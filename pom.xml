@@ -28,7 +28,7 @@
 
   <groupId>org.apache.maven.resolver</groupId>
   <artifactId>maven-resolver-ant-tasks</artifactId>
-  <version>2.0.1-SNAPSHOT</version>
+  <version>3.0.0-SNAPSHOT</version>
 
   <name>Maven Artifact Resolver Ant Tasks</name>
   <description>Ant tasks handling Maven artifacts using Maven Artifact Resolver and Maven Artifact Resolver Provider.</description>
@@ -58,11 +58,11 @@
   </distributionManagement>
 
   <properties>
-    <mavenVersion>3.10.0</mavenVersion>
+    <mavenVersion>4.0.0-rc-7</mavenVersion>
     <resolverVersion>2.0.24</resolverVersion>
     <antVersion>1.10.18</antVersion>
     <slf4jVersion>2.0.20</slf4jVersion>
-    <javaVersion>8</javaVersion>
+    <javaVersion>17</javaVersion>
     <junitVersion>4.13.2</junitVersion>
     <hamcrestVersion>3.0</hamcrestVersion>
     <maven.site.path>resolver-archives/resolver-ant-tasks-LATEST</maven.site.path>
@@ -72,20 +72,37 @@
 
   <dependencyManagement>
     <dependencies>
+      <!-- resolver-supplier-mvn4 brings maven-resolver-provider (and the compat model builder that reads dependency
+           POMs) of the Maven 4 version it was built against; align it with the Maven 4 API used directly. -->
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-resolver-provider</artifactId>
+        <version>${mavenVersion}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-model-builder</artifactId>
+        <version>${mavenVersion}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-model</artifactId>
+        <version>${mavenVersion}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.apache.maven</groupId>
+        <artifactId>maven-builder-support</artifactId>
+        <version>${mavenVersion}</version>
+      </dependency>
       <dependency>
         <groupId>org.codehaus.plexus</groupId>
         <artifactId>plexus-utils</artifactId>
-        <version>3.6.2</version>
+        <version>4.0.3</version>
       </dependency>
       <dependency>
         <groupId>org.codehaus.plexus</groupId>
-        <artifactId>plexus-cipher</artifactId>
-        <version>2.0</version>
-      </dependency>
-      <dependency>
-        <groupId>org.codehaus.plexus</groupId>
-        <artifactId>plexus-sec-dispatcher</artifactId>
-        <version>2.0</version>
+        <artifactId>plexus-xml</artifactId>
+        <version>4.2.0</version>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -145,7 +162,7 @@
     </dependency>
     <dependency>
       <groupId>org.apache.maven.resolver</groupId>
-      <artifactId>maven-resolver-supplier-mvn3</artifactId>
+      <artifactId>maven-resolver-supplier-mvn4</artifactId>
       <version>${resolverVersion}</version>
     </dependency>
     <dependency>
@@ -161,26 +178,35 @@
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-resolver-provider</artifactId>
-      <version>${mavenVersion}</version>
-    </dependency>
-    <!-- Used directly (org.apache.maven.model.building), and declared to keep it aligned with the other
-         Maven artifacts: maven-resolver-supplier-mvn3 would otherwise drag in its own, older version. -->
-    <dependency>
-      <groupId>org.apache.maven</groupId>
-      <artifactId>maven-model-builder</artifactId>
+      <artifactId>maven-api-core</artifactId>
       <version>${mavenVersion}</version>
     </dependency>
     <dependency>
       <groupId>org.apache.maven</groupId>
-      <artifactId>maven-settings-builder</artifactId>
+      <artifactId>maven-api-model</artifactId>
       <version>${mavenVersion}</version>
     </dependency>
-    <!-- This is needed to make the Maven resolver work with Maven 3.8.1+ -->
-    <!-- [resolver:resolve] [ERROR] Failed to determine Java version for profile XX -->
     <dependency>
-      <groupId>org.codehaus.plexus</groupId>
-      <artifactId>plexus-cipher</artifactId>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-api-settings</artifactId>
+      <version>${mavenVersion}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-api-xml</artifactId>
+      <version>${mavenVersion}</version>
+    </dependency>
+    <!-- The Maven 4 API has no Session outside Maven; org.apache.maven.impl.standalone.ApiRunner is the only
+         way to obtain one, and it lives in maven-impl. -->
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-impl</artifactId>
+      <version>${mavenVersion}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.maven</groupId>
+      <artifactId>maven-di</artifactId>
+      <version>${mavenVersion}</version>
     </dependency>
     <dependency>
       <groupId>org.codehaus.plexus</groupId>
@@ -278,6 +304,10 @@
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.SisuIndexResourceTransformer" />
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer" />
+                <!-- ApiRunner discovers the Maven 4 DI bindings from this index, which several jars contribute -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.AppendingTransformer">
+                  <resource>META-INF/maven/org.apache.maven.api.di.Inject</resource>
+                </transformer>
               </transformers>
               <relocations>
                 <relocation>
@@ -297,6 +327,9 @@
                   <excludes>
                     <exclude>org.apache.tools.**</exclude>
                     <exclude>org.apache.maven.resolver.**</exclude>
+                    <!-- Named in the (unrelocatable) DI index files, so they must keep their names -->
+                    <exclude>org.apache.maven.impl.**</exclude>
+                    <exclude>org.apache.maven.api.spi.**</exclude>
                   </excludes>
                 </relocation>
                 <relocation>

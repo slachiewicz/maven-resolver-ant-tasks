@@ -22,7 +22,7 @@ import java.io.File;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.apache.maven.model.Model;
+import org.apache.maven.api.model.Model;
 import org.apache.maven.resolver.internal.ant.AntRepoSys;
 import org.apache.maven.resolver.internal.ant.ProjectWorkspaceReader;
 import org.apache.maven.resolver.internal.ant.tasks.RefTask;
@@ -691,7 +691,7 @@ public class Pom extends RefTask {
     }
 
     /**
-     * Returns the parsed Maven {@link org.apache.maven.model.Model} associated with this POM.
+     * Returns the parsed Maven {@link org.apache.maven.api.model.Model} associated with this POM.
      * <p>
      * If a {@code file} has been specified via {@link #setFile(java.io.File)},
      * the model is lazily loaded and cached using the {@link AntRepoSys} instance
@@ -714,7 +714,7 @@ public class Pom extends RefTask {
      *
      * @see #setFile(java.io.File)
      * @see #isReference()
-     * @see org.apache.maven.model.Model
+     * @see org.apache.maven.api.model.Model
      */
     public Model getModel(Task task) {
         if (isReference()) {

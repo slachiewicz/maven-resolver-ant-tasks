@@ -19,22 +19,20 @@
 package org.apache.maven.resolver.internal.ant.tasks;
 
 import java.io.File;
-import java.io.FileReader;
 import java.io.IOException;
-import java.io.Reader;
 import java.util.List;
 
 import junit.framework.JUnit4TestAdapter;
-import org.apache.maven.model.Dependency;
-import org.apache.maven.model.DependencyManagement;
-import org.apache.maven.model.Developer;
-import org.apache.maven.model.License;
-import org.apache.maven.model.Model;
-import org.apache.maven.model.Repository;
-import org.apache.maven.model.Scm;
-import org.apache.maven.model.io.xpp3.MavenXpp3Reader;
+import org.apache.maven.api.model.Dependency;
+import org.apache.maven.api.model.DependencyManagement;
+import org.apache.maven.api.model.Developer;
+import org.apache.maven.api.model.License;
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.model.Repository;
+import org.apache.maven.api.model.Scm;
+import org.apache.maven.api.services.xml.ModelXmlFactory;
 import org.apache.maven.resolver.internal.ant.AntBuildsTest;
-import org.codehaus.plexus.util.xml.pull.XmlPullParserException;
+import org.apache.maven.resolver.internal.ant.MavenApi;
 import org.junit.Assert;
 import org.junit.Test;
 
@@ -48,7 +46,7 @@ public class CreatePomTest extends AntBuildsTest {
     }
 
     @Test
-    public void testCreatePom() throws IOException, XmlPullParserException {
+    public void testCreatePom() throws IOException {
         executeTarget("setup");
         String pomPath = getProject().getProperty("pomFile");
 
@@ -114,11 +112,8 @@ public class CreatePomTest extends AntBuildsTest {
         Assert.assertEquals("Scm url should match", "http://127.0.0.1/websvn/my-project", scm.getUrl());
     }
 
-    public static Model readPomFile(File pomFile) throws IOException, XmlPullParserException {
+    public static Model readPomFile(File pomFile) throws IOException {
         Assert.assertTrue("pomFile (" + pomFile + ") should exist", pomFile.exists());
-        try (Reader reader = new FileReader(pomFile)) {
-            MavenXpp3Reader pomReader = new MavenXpp3Reader();
-            return pomReader.read(reader);
-        }
+        return MavenApi.shared().getService(ModelXmlFactory.class).read(pomFile.toPath());
     }
 }

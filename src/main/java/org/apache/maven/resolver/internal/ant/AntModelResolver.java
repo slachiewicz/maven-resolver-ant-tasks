@@ -19,19 +19,23 @@
 package org.apache.maven.resolver.internal.ant;
 
 import java.io.File;
-import java.util.Collections;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.maven.model.Dependency;
-import org.apache.maven.model.Parent;
-import org.apache.maven.model.Repository;
-import org.apache.maven.model.building.FileModelSource;
-import org.apache.maven.model.building.ModelSource;
-import org.apache.maven.model.resolution.InvalidRepositoryException;
-import org.apache.maven.model.resolution.ModelResolver;
-import org.apache.maven.model.resolution.UnresolvableModelException;
+import org.apache.maven.api.Session;
+import org.apache.maven.api.SessionData;
+import org.apache.maven.api.di.Named;
+import org.apache.maven.api.di.Priority;
+import org.apache.maven.api.di.Singleton;
+import org.apache.maven.api.model.Dependency;
+import org.apache.maven.api.model.Parent;
+import org.apache.maven.api.services.ModelSource;
+import org.apache.maven.api.services.Sources;
+import org.apache.maven.api.services.model.ModelResolver;
+import org.apache.maven.api.services.model.ModelResolverException;
 import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
 import org.eclipse.aether.artifact.Artifact;
@@ -45,119 +49,144 @@ import org.eclipse.aether.resolution.ArtifactResolutionException;
 /**
  * A model resolver to assist building of dependency POMs. This resolver gives priority to those repositories that have
  * been initially specified and repositories discovered in dependency POMs are recessively merged into the search chain.
- *
+ * <p>
+ * It replaces the standalone session's own resolver (priority) and resolves through the Ant project's
+ * {@link RepositorySystem}. The Ant-side state reaches it through the session's data, see {@link #CONTEXT}.
+ * </p>
  */
-class AntModelResolver implements ModelResolver {
+@Named
+@Singleton
+@Priority(1000)
+public class AntModelResolver implements ModelResolver {
 
-    private final RepositorySystemSession session;
+    static final SessionData.Key<Context> CONTEXT = SessionData.key(Context.class);
 
-    private final String context;
+    /**
+     * The Ant-side state of one model build.
+     */
+    static final class Context {
 
-    private List<org.eclipse.aether.repository.RemoteRepository> repositories;
+        private final RepositorySystemSession session;
 
-    private final RepositorySystem repoSys;
+        private final String context;
 
-    private final RemoteRepositoryManager remoteRepositoryManager;
+        private final RepositorySystem repoSys;
 
-    private final Set<String> repositoryIds;
+        private final RemoteRepositoryManager remoteRepositoryManager;
 
-    AntModelResolver(
-            final RepositorySystemSession session,
-            final String context,
-            final RepositorySystem repoSys,
-            final RemoteRepositoryManager remoteRepositoryManager,
-            final List<RemoteRepository> repositories) {
-        this.session = session;
-        this.context = context;
-        this.repoSys = repoSys;
-        this.remoteRepositoryManager = remoteRepositoryManager;
-        this.repositories = repositories;
-        this.repositoryIds = new HashSet<>();
-    }
+        private List<RemoteRepository> repositories;
 
-    private AntModelResolver(final AntModelResolver original) {
-        this.session = original.session;
-        this.context = original.context;
-        this.repoSys = original.repoSys;
-        this.remoteRepositoryManager = original.remoteRepositoryManager;
-        this.repositories = original.repositories;
-        this.repositoryIds = new HashSet<>(original.repositoryIds);
-    }
+        private final Set<String> repositoryIds = new HashSet<>();
 
-    public void addRepository(final Repository repository) throws InvalidRepositoryException {
-        if (!repositoryIds.add(repository.getId())) {
-            return;
+        Context(
+                RepositorySystemSession session,
+                String context,
+                RepositorySystem repoSys,
+                RemoteRepositoryManager remoteRepositoryManager,
+                List<RemoteRepository> repositories) {
+            this.session = session;
+            this.context = context;
+            this.repoSys = repoSys;
+            this.remoteRepositoryManager = remoteRepositoryManager;
+            this.repositories = repositories;
+            for (RemoteRepository repository : repositories) {
+                repositoryIds.add(repository.getId());
+            }
         }
 
-        final List<RemoteRepository> newRepositories = Collections.singletonList(convert(repository));
+        /**
+         * Merges the repositories the model builder knows about, which include those declared by the POMs read so far.
+         * The v4 API exposes only id, URL and protocol of a repository, not its policies, so a discovered repository
+         * gets the default policies for both releases and snapshots.
+         */
+        synchronized void addRepositories(List<org.apache.maven.api.RemoteRepository> discovered) {
+            List<RemoteRepository> added = new ArrayList<>();
+            for (org.apache.maven.api.RemoteRepository repository : discovered) {
+                if (repositoryIds.add(repository.getId())) {
+                    added.add(convert(repository));
+                }
+            }
+            if (!added.isEmpty()) {
+                repositories = remoteRepositoryManager.aggregateRepositories(session, repositories, added, true);
+            }
+        }
 
-        this.repositories = remoteRepositoryManager.aggregateRepositories(session, repositories, newRepositories, true);
+        synchronized Artifact resolve(String groupId, String artifactId, String version)
+                throws ArtifactResolutionException {
+            Artifact pomArtifact = new DefaultArtifact(groupId, artifactId, "", "pom", version);
+            ArtifactRequest request = new ArtifactRequest(pomArtifact, repositories, context);
+            return repoSys.resolveArtifact(session, request).getArtifact();
+        }
     }
 
-    static RemoteRepository convert(final Repository repository) {
-        final RemoteRepository.Builder builder =
-                new RemoteRepository.Builder(repository.getId(), repository.getLayout(), repository.getUrl());
-        builder.setSnapshotPolicy(convert(repository.getSnapshots()));
-        builder.setReleasePolicy(convert(repository.getReleases()));
+    static RemoteRepository convert(org.apache.maven.api.RemoteRepository repository) {
+        RemoteRepository.Builder builder =
+                new RemoteRepository.Builder(repository.getId(), repository.getProtocol(), repository.getUrl());
+        builder.setSnapshotPolicy(new RepositoryPolicy());
+        builder.setReleasePolicy(new RepositoryPolicy());
         return builder.build();
     }
 
-    private static RepositoryPolicy convert(final org.apache.maven.model.RepositoryPolicy policy) {
-        boolean enabled = true;
-        String checksums = RepositoryPolicy.CHECKSUM_POLICY_WARN;
-        String updates = RepositoryPolicy.UPDATE_POLICY_DAILY;
-
-        if (policy != null) {
-            enabled = policy.isEnabled();
-            if (policy.getUpdatePolicy() != null) {
-                updates = policy.getUpdatePolicy();
-            }
-            if (policy.getChecksumPolicy() != null) {
-                checksums = policy.getChecksumPolicy();
-            }
+    private static Context context(Session session) {
+        Context context = session.getData().get(CONTEXT);
+        if (context == null) {
+            throw new IllegalStateException("No Ant repository context in the session");
         }
-
-        return new RepositoryPolicy(enabled, updates, checksums);
+        return context;
     }
 
-    public ModelResolver newCopy() {
-        return new AntModelResolver(this);
-    }
-
-    public ModelSource resolveModel(final String groupId, final String artifactId, final String version)
-            throws UnresolvableModelException {
-        Artifact pomArtifact = new DefaultArtifact(groupId, artifactId, "", "pom", version);
-
+    @Override
+    public ModelResolverResult resolveModel(ModelResolverRequest request) throws ModelResolverException {
+        Context context = context(request.getSession());
+        context.addRepositories(request.repositories());
         try {
-            final ArtifactRequest request = new ArtifactRequest(pomArtifact, repositories, context);
-            pomArtifact = repoSys.resolveArtifact(session, request).getArtifact();
-        } catch (final ArtifactResolutionException e) {
-            throw new UnresolvableModelException(
-                    "Failed to resolve POM for " + groupId + ":" + artifactId + ":" + version + " due to "
-                            + e.getMessage(),
-                    groupId,
-                    artifactId,
-                    version,
+            Artifact pomArtifact = context.resolve(request.groupId(), request.artifactId(), request.version());
+            File pomFile = pomArtifact.getPath().toFile();
+            return new ModelResolverResult(request, Sources.resolvedSource(pomFile.toPath(), null), request.version());
+        } catch (ArtifactResolutionException e) {
+            throw new ModelResolverException(
+                    "Failed to resolve POM for " + request.groupId() + ":" + request.artifactId() + ":"
+                            + request.version() + " due to " + e.getMessage(),
+                    request.groupId(),
+                    request.artifactId(),
+                    request.version(),
                     e);
         }
-
-        final File pomFile = pomArtifact.getPath().toFile();
-
-        return new FileModelSource(pomFile);
     }
 
     @Override
-    public ModelSource resolveModel(final Parent parent) throws UnresolvableModelException {
-        return resolveModel(parent.getGroupId(), parent.getArtifactId(), parent.getVersion());
+    public ModelSource resolveModel(
+            Session session,
+            List<org.apache.maven.api.RemoteRepository> repositories,
+            Parent parent,
+            AtomicReference<Parent> modified)
+            throws ModelResolverException {
+        return resolveModel(new ModelResolverRequest(
+                        session,
+                        null,
+                        repositories,
+                        parent.getGroupId(),
+                        parent.getArtifactId(),
+                        parent.getVersion(),
+                        null))
+                .source();
     }
 
     @Override
-    public ModelSource resolveModel(final Dependency dependency) throws UnresolvableModelException {
-        return resolveModel(dependency.getGroupId(), dependency.getArtifactId(), dependency.getVersion());
-    }
-
-    @Override
-    public void addRepository(final Repository repository, final boolean replace) throws InvalidRepositoryException {
-        addRepository(repository);
+    public ModelSource resolveModel(
+            Session session,
+            List<org.apache.maven.api.RemoteRepository> repositories,
+            Dependency dependency,
+            AtomicReference<Dependency> modified)
+            throws ModelResolverException {
+        return resolveModel(new ModelResolverRequest(
+                        session,
+                        null,
+                        repositories,
+                        dependency.getGroupId(),
+                        dependency.getArtifactId(),
+                        dependency.getVersion(),
+                        null))
+                .source();
     }
 }
