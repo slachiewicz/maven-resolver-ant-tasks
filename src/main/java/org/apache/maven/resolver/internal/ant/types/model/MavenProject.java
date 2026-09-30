@@ -23,8 +23,14 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-import org.apache.maven.model.Model;
-import org.apache.maven.model.io.xpp3.MavenXpp3Writer;
+import org.apache.maven.api.model.Developer;
+import org.apache.maven.api.model.Exclusion;
+import org.apache.maven.api.model.Model;
+import org.apache.maven.api.model.Repository;
+import org.apache.maven.api.model.Scm;
+import org.apache.maven.api.services.xml.ModelXmlFactory;
+import org.apache.maven.api.services.xml.XmlWriterException;
+import org.apache.maven.resolver.internal.ant.MavenApi;
 import org.apache.maven.resolver.internal.ant.types.Dependency;
 import org.apache.tools.ant.types.DataType;
 
@@ -34,15 +40,25 @@ import org.apache.tools.ant.types.DataType;
  * such as adding licenses, dependencies, and setting project properties.
  */
 public class MavenProject extends DataType {
-    private final Model model;
+    private final Model.Builder model;
+
+    private final List<org.apache.maven.api.model.License> licenses = new ArrayList<>();
+
+    private final List<org.apache.maven.api.model.Dependency> dependencies = new ArrayList<>();
+
+    private final List<org.apache.maven.api.model.Dependency> managedDependencies = new ArrayList<>();
+
+    private final List<Repository> repositories = new ArrayList<>();
+
+    private final List<Developer> developers = new ArrayList<>();
+
+    private Scm scm;
 
     /**
      * Initialize a new Maven project instance with the modelVersion set to "4.0.0" and packaging to "jar".
      */
     public MavenProject() {
-        model = new Model();
-        model.setModelVersion("4.0.0");
-        model.setPackaging("jar");
+        model = Model.newBuilder().modelVersion("4.0.0").packaging("jar");
     }
 
     /**
@@ -51,12 +67,12 @@ public class MavenProject extends DataType {
      * @param license the License object to add, must not be null
      */
     public void addLicense(License license) {
-        org.apache.maven.model.License pomLicense = new org.apache.maven.model.License();
-        pomLicense.setName(license.getName());
-        pomLicense.setUrl(license.getUrl());
-        pomLicense.setComments(license.getComments());
-        pomLicense.setDistribution(license.getDistribution());
-        model.getLicenses().add(pomLicense);
+        licenses.add(org.apache.maven.api.model.License.newBuilder()
+                .name(license.getName())
+                .url(license.getUrl())
+                .comments(license.getComments())
+                .distribution(license.getDistribution())
+                .build());
     }
 
     /**
@@ -65,7 +81,7 @@ public class MavenProject extends DataType {
      * @param groupId the groupId to set, must not be null or empty
      */
     public void setGroupId(String groupId) {
-        model.setGroupId(groupId);
+        model.groupId(groupId);
     }
 
     /**
@@ -74,7 +90,7 @@ public class MavenProject extends DataType {
      * @param artifactId the artifactId to set, must not be null or empty
      */
     public void setArtifactId(String artifactId) {
-        model.setArtifactId(artifactId);
+        model.artifactId(artifactId);
     }
 
     /**
@@ -83,7 +99,7 @@ public class MavenProject extends DataType {
      * @param version the version to set, must not be null or empty
      */
     public void setVersion(String version) {
-        model.setVersion(version);
+        model.version(version);
     }
 
     /**
@@ -92,7 +108,7 @@ public class MavenProject extends DataType {
      * @param name the name to set, can be null or empty
      */
     public void setName(String name) {
-        model.setName(name);
+        model.name(name);
     }
 
     /**
@@ -101,7 +117,7 @@ public class MavenProject extends DataType {
      * @param description the description to set, can be null or empty
      */
     public void setDescription(String description) {
-        model.setDescription(description);
+        model.description(description);
     }
 
     /**
@@ -109,42 +125,36 @@ public class MavenProject extends DataType {
      * @param dependency the Dependency object to add, must not be null
      */
     public void addDependency(Dependency dependency) {
-        List<org.apache.maven.model.Dependency> dependencies = model.getDependencies();
-        if (dependencies == null) {
-            dependencies = new ArrayList<>();
-            model.setDependencies(dependencies);
-        }
-        org.apache.maven.model.Dependency pomDependency = convert(dependency);
-        dependencies.add(pomDependency);
+        dependencies.add(convert(dependency));
     }
 
-    private org.apache.maven.model.Dependency convert(Dependency dep) {
-        org.apache.maven.model.Dependency dependency = new org.apache.maven.model.Dependency();
-        dependency.setGroupId(dep.getGroupId());
-        dependency.setArtifactId(dep.getArtifactId());
+    private org.apache.maven.api.model.Dependency convert(Dependency dep) {
+        org.apache.maven.api.model.Dependency.Builder dependency = org.apache.maven.api.model.Dependency.newBuilder()
+                .groupId(dep.getGroupId())
+                .artifactId(dep.getArtifactId());
         if (dep.getVersion() != null) {
-            dependency.setVersion(dep.getVersion());
+            dependency.version(dep.getVersion());
         }
         if (dep.getType() != null) {
-            dependency.setType(dep.getType());
+            dependency.type(dep.getType());
         }
         if (dep.getClassifier() != null) {
-            dependency.setClassifier(dep.getClassifier());
+            dependency.classifier(dep.getClassifier());
         }
         if (dep.getScope() != null && !dep.getScope().trim().isEmpty()) {
-            dependency.setScope(dep.getScope());
+            dependency.scope(dep.getScope());
         }
 
         if (dep.getExclusions() != null && !dep.getExclusions().isEmpty()) {
-            dependency.setExclusions(new ArrayList<>());
-            dep.getExclusions().forEach(exclusion -> {
-                org.apache.maven.model.Exclusion mavenExclusion = new org.apache.maven.model.Exclusion();
-                mavenExclusion.setGroupId(exclusion.getGroupId());
-                mavenExclusion.setArtifactId(exclusion.getArtifactId());
-                dependency.getExclusions().add(mavenExclusion);
-            });
+            List<Exclusion> exclusions = new ArrayList<>();
+            dep.getExclusions()
+                    .forEach(exclusion -> exclusions.add(Exclusion.newBuilder()
+                            .groupId(exclusion.getGroupId())
+                            .artifactId(exclusion.getArtifactId())
+                            .build()));
+            dependency.exclusions(exclusions);
         }
-        return dependency;
+        return dependency.build();
     }
 
     /**
@@ -153,19 +163,55 @@ public class MavenProject extends DataType {
      * @param dep the Dependency object to add, must not be null
      */
     public void addToDependencyManagement(Dependency dep) {
-        if (model.getDependencyManagement() == null) {
-            model.setDependencyManagement(new org.apache.maven.model.DependencyManagement());
-        }
-        model.getDependencyManagement().addDependency(convert(dep));
+        managedDependencies.add(convert(dep));
     }
 
     /**
-     * Gets the Maven project model.
+     * Adds a repository to the Maven project model.
+     *
+     * @param repository the repository to add, must not be null
+     */
+    public void addRepository(Repository repository) {
+        repositories.add(repository);
+    }
+
+    /**
+     * Adds a developer to the Maven project model.
+     *
+     * @param developer the developer to add, must not be null
+     */
+    public void addDeveloper(Developer developer) {
+        developers.add(developer);
+    }
+
+    /**
+     * Sets the SCM section of the Maven project model.
+     *
+     * @param scm the SCM section, must not be null
+     */
+    public void setScm(Scm scm) {
+        this.scm = scm;
+    }
+
+    /**
+     * Gets the Maven project model as configured so far. The v4 model is immutable, so this is a snapshot: later
+     * changes to this project are not reflected in a model returned earlier.
      *
      * @return the Model object representing the Maven project, never null
      */
     public Model getModel() {
-        return model;
+        Model.Builder builder = Model.newBuilder(model.build(), true);
+        builder.licenses(licenses).dependencies(dependencies).repositories(repositories);
+        builder.developers(developers);
+        if (!managedDependencies.isEmpty()) {
+            builder.dependencyManagement(org.apache.maven.api.model.DependencyManagement.newBuilder()
+                    .dependencies(managedDependencies)
+                    .build());
+        }
+        if (scm != null) {
+            builder.scm(scm);
+        }
+        return builder.build();
     }
 
     /**
@@ -175,7 +221,10 @@ public class MavenProject extends DataType {
      * @throws IOException if an I/O error occurs while writing
      */
     public void toPom(OutputStream pomStream) throws IOException {
-        MavenXpp3Writer pomWriter = new MavenXpp3Writer();
-        pomWriter.write(pomStream, model);
+        try {
+            MavenApi.shared().getService(ModelXmlFactory.class).write(getModel(), pomStream);
+        } catch (XmlWriterException e) {
+            throw new IOException(e.getMessage(), e);
+        }
     }
 }
